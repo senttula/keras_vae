@@ -14,8 +14,6 @@ from keras.callbacks import Callback
 from keras.utils import plot_model
 from keras import backend as K
 
-from tensorflow import random_shuffle
-
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
@@ -30,66 +28,17 @@ x_test = np.reshape(x_test, [-1, original_dim])
 x_train = x_train.astype('float32') / 255
 x_test = x_test.astype('float32') / 255
 
-def plot_results(models,
-                 data,
-                 batch_size=128,
-                 model_name="vae_mnist"):
-    """Plots labels and MNIST digits as function of 2-dim latent vector
-
-    # Arguments:
-        models (tuple): encoder and decoder models
-        data (tuple): test data and label
-        batch_size (int): prediction batch size
-        model_name (string): which model is using this function
-    """
-
-    encoder, decoder = models
-    x_test, y_test = data
-    os.makedirs(model_name, exist_ok=True)
-
-    filename = os.path.join(model_name, "vae_mean.png")
-    # display a 2D plot of the digit classes in the latent space
-    z_mean, _, _ = encoder.predict(x_test,
-                                   batch_size=batch_size)
-    plt.figure(figsize=(12, 10))
-    plt.scatter(z_mean[:, 0], z_mean[:, 1], c=y_test)
-    plt.colorbar()
-    plt.xlabel("z[0]")
-    plt.ylabel("z[1]")
-    plt.savefig(filename)
-    plt.show()
-
-    filename = os.path.join(model_name, "digits_over_latent.png")
-    # display a 30x30 2D manifold of digits
-    n = 30
-    digit_size = 28
-    figure = np.zeros((digit_size * n, digit_size * n))
-    # linearly spaced coordinates corresponding to the 2D plot
-    # of digit classes in the latent space
-    grid_x = np.linspace(-4, 4, n)
-    grid_y = np.linspace(-4, 4, n)[::-1]
-
-    for i, yi in enumerate(grid_y):
-        for j, xi in enumerate(grid_x):
-            z_sample = np.array([[xi, yi]])
-            x_decoded = decoder.predict(z_sample)
-            digit = x_decoded[0].reshape(digit_size, digit_size)
-            figure[i * digit_size: (i + 1) * digit_size,
-                   j * digit_size: (j + 1) * digit_size] = digit
-
-    plt.figure(figsize=(10, 10))
-    start_range = digit_size // 2
-    end_range = n * digit_size + start_range + 1
-    pixel_range = np.arange(start_range, end_range, digit_size)
-    sample_range_x = np.round(grid_x, 1)
-    sample_range_y = np.round(grid_y, 1)
-    plt.xticks(pixel_range, sample_range_x)
-    plt.yticks(pixel_range, sample_range_y)
-    plt.xlabel("z[0]")
-    plt.ylabel("z[1]")
-    plt.imshow(figure, cmap='Greys_r')
-    plt.savefig(filename)
-    plt.show()
+def make_gif():
+    try:
+        import imageio
+        import datetime
+        images = []
+        for filename in checkpointer.saved_images:
+            images.append(imageio.imread(filename))
+        output_file = 'Gif-%s.gif' % datetime.datetime.now().strftime('%d-%H-%M-%S')
+        imageio.mimwrite(output_file, images, duration=0.1)
+    except e:
+        print(e)
 
 class Sampling(Add):
     # merging Layer
@@ -111,7 +60,19 @@ input_shape = (original_dim, )
 intermediate_dim = 32
 batch_size = 128
 latent_dim = 2
-epochs = 50
+epochs = 25
+batch_separation = True
+
+
+temp_folder = 'temp_images'
+os.makedirs(temp_folder, exist_ok=True)
+for the_file in os.listdir(temp_folder):
+    file_path = os.path.join(temp_folder, the_file)
+    try:
+        if os.path.isfile(file_path):
+            os.unlink(file_path)
+    except Exception as e:
+        print(e)
 
 # VAE model = encoder + decoder
 # build encoder model
@@ -150,29 +111,94 @@ kl_loss -= K.exp(z_log_var)# penalises from too large z_log_var ==> keeps z_log_
 kl_loss = K.sum(kl_loss, axis=-1)
 kl_loss *= -.5 # negative to maximize
 
-# separating point means
-difference = z_mean-K.reverse(z_mean, axes=[1]) # pair latent points randomly, reverse is random enough
-total_distance = (K.sum(K.abs(difference), axis=1))+1  # L1 distance the pairs and sum
-mean_diversity = -K.log(total_distance)  # negative to maximize distance, log keeps means sensible
 
-regualrization = K.sum((K.square(z_mean)+K.abs(z_mean)))*0.001#  keeps means from growing indefinitely ==> regualrization
 
-vae_loss = K.mean(reconstruction_loss + kl_loss + regualrization)
+
+
+if batch_separation:
+    # separating point means
+    difference = z_mean - K.reverse(z_mean, axes=[1])  # pair latent points randomly, reverse is random enough
+    # total_distance = (K.sum(K.abs(difference), axis=1))+1  # L1 distance the pairs and sum
+    total_distance = K.sqrt(K.sum(K.square(difference), axis=1))  # distance the pairs and sum
+    mean_diversity = -K.log(total_distance)  # negative to maximize distance, log keeps means sensible
+    regualrization = K.sum((K.abs(z_mean) * 0.005 + K.square(z_mean) * 0.001))#  keeps means from growing indefinitely ==> regualrization
+    vae_loss = K.mean(reconstruction_loss + kl_loss + regualrization + mean_diversity)
+else:
+    regualrization = K.sum((K.abs(z_mean) * 0.001 + K.square(z_mean) * 0.001))
+    vae_loss = K.mean(reconstruction_loss + kl_loss + regualrization)
+
 vae.add_loss(vae_loss)
 vae.compile(optimizer='adam')
 vae.summary()
 
-# train the autoencoder
+vae.load_weights('vae_weigths.h5')
 
+
+class save_checkpoint(Callback):
+    def set_model(self, model):
+        pass
+
+    def set_all(self, model, encoder_predicts):
+        self.model = model
+        self.encoder_predicts = encoder_predicts
+        self.epoch = 0
+        self.saved_images = []
+        self.save_frequency = 100
+
+    def on_train_begin(self, logs=None):
+        z_mean, _, _ = self.model.predict(x_test)
+        self.encoder_predicts = np.concatenate((self.encoder_predicts, z_mean[np.newaxis, :, :]), axis=0)
+        titlenumber = str(0.0)
+        filename = os.path.join(temp_folder,  titlenumber + '_means.png')
+        self.save_image(filename, titlenumber)
+        self.saved_images.append(filename)
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.epoch = epoch+1
+        if epoch==5:
+            self.save_frequency = 230
+        if epoch==10:
+            self.save_frequency = 1000
+
+    def on_batch_end(self, batch, logs=None):
+        if batch%self.save_frequency ==0:
+            z_mean, _, _ = self.model.predict(x_test)
+            self.encoder_predicts = np.concatenate((self.encoder_predicts, z_mean[np.newaxis, :, :]), axis=0)
+            titlenumber = str(self.epoch+round(batch/468, 1))
+            filename = os.path.join(temp_folder,  titlenumber + '_means.png')
+            self.save_image(filename, titlenumber)
+            self.saved_images.append(filename)
+
+    def save_image(self, filename, titlenumber):
+        z_mean, _, _ = encoder.predict(x_test,
+                                       batch_size=batch_size)
+        plt.figure(figsize=(12, 10))
+        plt.scatter(z_mean[:, 0], z_mean[:, 1], c=y_test)
+        plt.colorbar()
+        plt.xlabel("z[0]")
+        plt.ylabel("z[1]")
+        plt.title('epoch: '+titlenumber)
+        plt.axis([-8, 8, -8, 8])
+        plt.savefig(filename)
+
+encoder.compile(optimizer='adam', loss='mse')
+z_mean, _, _ = encoder.predict(x_test)
+encoder_predicts = z_mean[np.newaxis, :, :]
+checkpointer = save_checkpoint()
+checkpointer.set_all(encoder, encoder_predicts)
+
+callbacks = [checkpointer]
+# train the autoencoder
 vae.fit(x_train,
         epochs=epochs,
         batch_size=batch_size,
         validation_data=(x_test, None),
-        verbose=1)
+        verbose=2,
+        callbacks=callbacks)
 
-vae.save_weights('vae_mlp_mnist.h5')
+print(checkpointer.encoder_predicts.shape)
 
-plot_results((encoder, decoder),
-             (x_test, y_test),
-             batch_size=batch_size,
-             model_name="vae_mlp")
+#vae.save_weights('vae_weigths.h5')
+
+
+make_gif()
