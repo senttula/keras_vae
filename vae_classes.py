@@ -51,10 +51,10 @@ class Sampling(Add):
 # network parameters
 input_shape = (original_dim, )
 
-intermediate_dim = 32
+intermediate_dim = 128
 batch_size = 128
 latent_dim = 2
-epochs = 50
+epochs = 5000
 classes = 10
 
 
