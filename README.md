@@ -10,3 +10,7 @@ Class dependant version uses the label info to get better results
 
 ![Representative image](https://github.com/senttula/keras_vae/blob/master/digits_over_latent.png)<br>
 **Picture:** class dependant generated digits
+
+Comparing autoencoder losses to find samples hard to reconstruct
+![Representative image](https://github.com/senttula/keras_vae/blob/master/sample_differences.png)<br>
+**Picture:** high loss samples from the dataset
